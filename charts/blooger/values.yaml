@@ -1,0 +1,266 @@
+# =============================================================================
+# Blooger — default values
+# =============================================================================
+# The defaults here are chosen so that `helm install blooger blooger/blooger`
+# works on kind, minikube, EKS, GKE, AKS and DigitalOcean with:
+#   * no cloud disk provisioned  (DB data lives on the node)
+#   * no cloud load balancer     (frontend exposed via NodePort)
+# Everything below is overridable with --set or -f my-values.yaml.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Naming
+# -----------------------------------------------------------------------------
+# These names are FIXED rather than prefixed with the Helm release name, on
+# purpose. The frontend image may have the backend hostname compiled into its
+# nginx config (proxy_pass http://blooger-backend:8080), and a baked-in
+# hostname cannot be changed by Helm. Keeping the Service names stable means
+# the images work no matter what you call the release.
+#
+# Trade-off: one Blooger release per namespace. To run a second copy, give it
+# its own namespace:
+#   helm install blooger-staging blooger/blooger -n blooger-staging --create-namespace
+#
+# If you rebuild your frontend to read the backend URL from env at runtime, you
+# can rename freely here.
+naming:
+  db: blooger-db
+  backend: blooger-backend
+  frontend: blooger-frontend
+
+
+# -----------------------------------------------------------------------------
+# Cluster-wide
+# -----------------------------------------------------------------------------
+imagePullSecrets: []
+# - name: my-registry-cred
+
+# Extra labels/annotations stamped onto every pod.
+podLabels: {}
+podAnnotations: {}
+
+
+# =============================================================================
+# Database — PostgreSQL
+# =============================================================================
+db:
+  enabled: true
+
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+
+  auth:
+    username: blooger_user
+    database: blooger_db
+
+    # Leave empty to auto-generate a 24-character password on first install.
+    # On `helm upgrade` the chart reads the existing Secret and reuses the same
+    # password, so the DB and backend never drift apart.
+    #
+    # NOTE: if you render with `helm template` (GitOps / Argo CD), Helm cannot
+    # read the cluster, so a *new* random password is produced every render.
+    # For GitOps, always set this explicitly or use existingSecret below.
+    password: "12345678"
+
+    # Use a Secret you manage yourself instead of letting the chart create one.
+    # It must contain these three keys: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+    existingSecret: ""
+
+  persistence:
+    # ---------------------------------------------------------------------
+    # hostPath  (default) — data is written to a plain directory on whichever
+    #                       node the DB pod lands on. No StorageClass, no CSI
+    #                       driver, no cloud disk, nothing to clean up, $0.
+    #                       Survives pod restarts and rollouts.
+    #                       Lost if the pod moves to a different node.
+    #
+    # pvc                 — a real dynamically provisioned volume from a
+    #                       StorageClass. This DOES create a billable disk on
+    #                       cloud providers. See README "Real cloud storage".
+    #
+    # emptyDir            — nothing is persisted at all; the database is wiped
+    #                       on every pod restart. Throwaway demos only.
+    # ---------------------------------------------------------------------
+    mode: hostPath
+
+    hostPath:
+      # Directory created on the node (type: DirectoryOrCreate).
+      path: /var/lib/blooger/pgdata
+
+      # Strongly recommended on any multi-node cluster: pin the DB pod to one
+      # node so it always comes back to its own data directory.
+      #   kubectl get nodes
+      #   helm upgrade --install ... --set db.persistence.hostPath.nodeName=ip-10-0-1-23
+      # Leave empty on single-node clusters (kind, minikube, k3s).
+      nodeName: ""
+
+    pvc:
+      size: 1Gi
+      # "" uses the cluster's default StorageClass.
+      storageClassName: ""
+      accessModes:
+        - ReadWriteOnce
+      # Bind to a PVC you already created instead of making a new one.
+      existingClaim: ""
+      # Set to true to keep the PVC (and the cloud disk) after `helm uninstall`.
+      retainOnDelete: false
+
+  service:
+    port: 5432
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # The official postgres image runs initdb as root and then drops privileges,
+  # so runAsNonRoot must stay false and the root filesystem must stay writable.
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    runAsNonRoot: false
+
+  podSecurityContext: {}
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+
+# =============================================================================
+# Backend — API
+# =============================================================================
+backend:
+  replicaCount: 2
+
+  image:
+    repository: ghcr.io/ak-devops-anurag-org/blooger/blooger-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  # image:
+  #   repository: akdevanurag/blooger
+  #   tag: backend
+  #   pullPolicy: IfNotPresent
+
+  containerPort: 8080
+
+  service:
+    port: 8080
+
+  # Path the liveness/readiness probes hit.
+  healthPath: /api/health
+
+  # Blocks startup until the DB is accepting TCP connections.
+  waitForDb:
+    enabled: true
+    image:
+      repository: busybox
+      tag: "1.36"
+      pullPolicy: IfNotPresent
+
+  # Anything extra your API needs.
+  extraEnv: []
+  # - name: LOG_LEVEL
+  #   value: debug
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
+    capabilities:
+      drop:
+        - ALL
+
+  podSecurityContext: {}
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+
+# =============================================================================
+# Frontend — nginx
+# =============================================================================
+frontend:
+  replicaCount: 2
+
+  image:
+    repository: ghcr.io/ak-devops-anurag-org/blooger/blooger-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  # image:
+  #   repository: akdevanurag/blooger
+  #   tag: frontend
+    # pullPolicy: IfNotPresent
+
+  containerPort: 80
+
+  service:
+    # NodePort is the default because it works everywhere and costs nothing.
+    # LoadBalancer is deliberately NOT the default — it would create a cloud
+    # load balancer, which is what we are avoiding.
+    #   NodePort    -> reachable on <any-node-ip>:<nodePort>, or port-forward
+    #   ClusterIP   -> port-forward / Ingress only
+    #   LoadBalancer-> only if you actually want to pay for one
+    type: NodePort
+    port: 80
+    # Leave empty and Kubernetes assigns a free port in 30000-32767.
+    # Pin it if you need a predictable URL (e.g. kind extraPortMappings).
+    nodePort: ""
+
+  # Optional Ingress. Needs an ingress controller already in the cluster.
+  # An ingress-nginx install creates ONE shared L4 load balancer for the whole
+  # cluster rather than one per app, so it is the cheap way to get a real
+  # hostname if you need it. Off by default.
+  ingress:
+    enabled: false
+    className: nginx
+    annotations: {}
+    hosts:
+      - host: blooger.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+    # - secretName: blooger-tls
+    #   hosts:
+    #     - blooger.local
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+  # nginx needs a writable filesystem for its cache and pid file.
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    runAsNonRoot: true
+    runAsUser: 101
+    capabilities:
+      drop:
+        - ALL
+
+  podSecurityContext: {}
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}

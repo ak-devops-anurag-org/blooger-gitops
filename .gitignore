@@ -1,0 +1,31 @@
+node_modules/
+dist/
+.env
+*.log
+
+# Terraform
+terraform
+
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/.terraform.lock.hcl
+terraform/crash.log
+
+# Docker
+*.tar
+
+# OS
+.DS_Store
+Thumbs.db
+
+# cicd
+.github/workflows/sim-security-scan.yml
+
+*.tgz
+.cr-release-packages/
+.cr-index/
+.DS_Store
+
+
+/progress and tmp

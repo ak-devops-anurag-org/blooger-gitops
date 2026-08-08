@@ -1,0 +1,123 @@
+{{- if .Values.db.enabled }}
+{{- $dbNodeSelector := merge (dict) (.Values.db.nodeSelector | default dict) }}
+{{- if and (eq .Values.db.persistence.mode "hostPath") .Values.db.persistence.hostPath.nodeName }}
+{{- $dbNodeSelector = merge $dbNodeSelector (dict "kubernetes.io/hostname" .Values.db.persistence.hostPath.nodeName) }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "blooger.db.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "blooger.db.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+    {{- include "blooger.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    # Recreate, not RollingUpdate: a single-writer database must never have two
+    # pods holding the same data directory, and RWO volumes cannot be mounted
+    # by an old and a new pod simultaneously.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "blooger.db.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "blooger.db.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: database
+        {{- include "blooger.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # The database has no business talking to the Kubernetes API.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.db.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if $dbNodeSelector }}
+      nodeSelector:
+        {{- toYaml $dbNodeSelector | nindent 8 }}
+      {{- end }}
+      {{- with .Values.db.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.db.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: postgres
+          image: {{ include "blooger.image" .Values.db.image }}
+          imagePullPolicy: {{ .Values.db.image.pullPolicy }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: {{ include "blooger.db.secretName" . }}
+          volumeMounts:
+            - name: db-storage
+              mountPath: /var/lib/postgresql/data
+              # PGDATA gets its own subdirectory so postgres never sees
+              # lost+found or anything else sitting in the mount root.
+              subPath: pgdata
+          resources:
+            {{- toYaml .Values.db.resources | nindent 12 }}
+          {{- with .Values.db.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # Both probes read the user and database out of the container's own
+          # environment. Wrapped in `sh -c` because exec probes do not perform
+          # shell variable expansion on their own.
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1'
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1'
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+      volumes:
+        - name: db-storage
+        {{- if eq .Values.db.persistence.mode "hostPath" }}
+          # A directory on the node. No StorageClass, no CSI driver, no cloud
+          # disk, nothing to pay for and nothing to clean up.
+          hostPath:
+            path: {{ .Values.db.persistence.hostPath.path | quote }}
+            type: DirectoryOrCreate
+        {{- else if eq .Values.db.persistence.mode "pvc" }}
+          persistentVolumeClaim:
+            claimName: {{ include "blooger.db.claimName" . }}
+        {{- else if eq .Values.db.persistence.mode "emptyDir" }}
+          emptyDir: {}
+        {{- else }}
+          {{- fail (printf "db.persistence.mode must be one of hostPath, pvc, emptyDir — got %q" .Values.db.persistence.mode) }}
+        {{- end }}
+{{- end }}

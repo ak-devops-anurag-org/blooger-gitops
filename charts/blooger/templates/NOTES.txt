@@ -1,0 +1,116 @@
+╔═══════════════════════════════════════════════════════════════════════╗
+║   BLOOGER  {{ .Chart.AppVersion }}  •  release: {{ .Release.Name }}   ║
+╚═══════════════════════════════════════════════════════════════════════╝
+
+  kubectl get pods -n {{ .Release.Namespace }} -w
+
+  Backend pods show Init:0/1 for ~30s while wait-for-db
+  polls Postgres. That is normal, not a failure.
+
+━━━ ACCESS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{{- if eq .Values.frontend.service.type "NodePort" }}
+
+  kubectl port-forward -n {{ .Release.Namespace }} \
+    svc/{{ include "blooger.frontend.name" . }} 3000:80
+  → http://localhost:3000
+
+  NodePort (direct, cloud: open port in security group first):
+    NODE_PORT=$(kubectl get svc {{ include "blooger.frontend.name" . }} -n {{ .Release.Namespace }} \
+      -o jsonpath='{.spec.ports[0].nodePort}')
+    NODE_IP=$(kubectl get nodes \
+      -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}')
+    echo "http://$NODE_IP:$NODE_PORT"
+{{- else if eq .Values.frontend.service.type "LoadBalancer" }}
+
+  kubectl get svc {{ include "blooger.frontend.name" . }} -n {{ .Release.Namespace }} -w
+  (waiting on cloud load balancer — this costs money)
+{{- else }}
+
+  kubectl port-forward -n {{ .Release.Namespace }} \
+    svc/{{ include "blooger.frontend.name" . }} 3000:80
+  → http://localhost:3000
+{{- end }}
+{{- if .Values.frontend.ingress.enabled }}
+
+  Ingress:
+{{- range .Values.frontend.ingress.hosts }}
+    http{{ if $.Values.frontend.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- end }}
+
+━━━ STORAGE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{{- if eq .Values.db.persistence.mode "hostPath" }}
+
+  Mode  : hostPath  (free, no cloud disk)
+  Path  : {{ .Values.db.persistence.hostPath.path }}
+  Node  : {{ if .Values.db.persistence.hostPath.nodeName }}{{ .Values.db.persistence.hostPath.nodeName }}{{ else }}NOT PINNED — pin on multi-node clusters:
+            helm upgrade {{ .Release.Name }} oci://ghcr.io/githubak2002/charts/blooger \
+              --version {{ .Chart.Version }} -n {{ .Release.Namespace }} --reuse-values \
+              --set db.persistence.hostPath.nodeName=<node-name>{{ end }}
+
+  ⚠  STALE DATA — the #1 cause of "password authentication failed"
+  ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+  Postgres only runs initdb when the data dir is EMPTY.
+  A leftover dir from a previous install means Postgres boots
+  with OLD credentials — even if the Secret is correct.
+
+  Verify after every install:
+    kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "blooger.db.name" . }} -- \
+      psql -U postgres -c "\du"
+  → {{ .Values.db.auth.username }} must appear in the list.
+{{- else if eq .Values.db.persistence.mode "pvc" }}
+
+  Mode  : PVC  (billable cloud disk)
+  Size  : {{ .Values.db.persistence.pvc.size }}
+  Class : {{ .Values.db.persistence.pvc.storageClassName | default "<cluster default>" }}
+{{- if .Values.db.persistence.pvc.retainOnDelete }}
+  ! retainOnDelete=true — disk survives helm uninstall. Delete manually:
+      kubectl delete pvc {{ include "blooger.db.claimName" . }} -n {{ .Release.Namespace }}
+{{- end }}
+{{- else }}
+
+  Mode  : emptyDir  — ALL DATA WIPED ON EVERY POD RESTART
+{{- end }}
+
+━━━ DB CREDENTIALS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{{- if not .Values.db.auth.existingSecret }}
+
+  kubectl get secret {{ include "blooger.db.secretName" . }} -n {{ .Release.Namespace }} \
+    -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d; echo
+{{- else }}
+
+  Using existing secret: {{ .Values.db.auth.existingSecret }}
+{{- end }}
+
+━━━ UNINSTALL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{{- if eq .Values.db.persistence.mode "hostPath" }}
+
+  ⚠  hostPath dirs are NOT removed by Helm. Reinstalling without
+  wiping = stale credentials = broken backend. Always:
+
+  1) Note the DB node:
+       kubectl get pod -n {{ .Release.Namespace }} \
+         -l app.kubernetes.io/name={{ include "blooger.db.name" . }} -o wide
+
+  2) Uninstall:
+       helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+       kubectl delete namespace {{ .Release.Namespace }}
+
+  3) Wipe data dir on that node —
+     kind / single-node:
+       docker exec -it <node-name> rm -rf {{ .Values.db.persistence.hostPath.path }}
+     cloud cluster:
+       kubectl debug node/<node-name> -it --image=busybox -- \
+         sh -c "rm -rf /host{{ .Values.db.persistence.hostPath.path }}"
+
+  4) Reinstall (Postgres re-inits with fresh credentials):
+       helm install {{ .Release.Name }} oci://ghcr.io/githubak2002/charts/blooger \
+         --version {{ .Chart.Version }} \
+         --namespace {{ .Release.Namespace }} --create-namespace
+{{- else }}
+
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+  kubectl delete namespace {{ .Release.Namespace }}
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

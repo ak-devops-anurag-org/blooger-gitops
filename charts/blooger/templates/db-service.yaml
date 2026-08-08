@@ -1,0 +1,21 @@
+{{- if .Values.db.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "blooger.db.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "blooger.db.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+    {{- include "blooger.labels" . | nindent 4 }}
+spec:
+  # ClusterIP only. The database is never reachable from outside the cluster.
+  type: ClusterIP
+  selector:
+    {{- include "blooger.db.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: postgres
+      port: {{ .Values.db.service.port }}
+      targetPort: postgres
+      protocol: TCP
+{{- end }}

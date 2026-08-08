@@ -1,0 +1,31 @@
+{{- if and .Values.db.enabled (eq .Values.db.persistence.mode "pvc") (not .Values.db.persistence.pvc.existingClaim) }}
+# ---------------------------------------------------------------------------
+# Only created when db.persistence.mode=pvc.
+# The default mode (hostPath) creates NO PVC and NO cloud disk at all.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "blooger.db.claimName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "blooger.db.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+    {{- include "blooger.labels" . | nindent 4 }}
+  {{- if .Values.db.persistence.pvc.retainOnDelete }}
+  annotations:
+    # Keeps the claim — and therefore the cloud disk — after `helm uninstall`.
+    # Delete it by hand when you are done, or it keeps billing:
+    #   kubectl delete pvc {{ include "blooger.db.claimName" . }} -n {{ .Release.Namespace }}
+    helm.sh/resource-policy: keep
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.db.persistence.pvc.accessModes | nindent 4 }}
+  {{- if .Values.db.persistence.pvc.storageClassName }}
+  storageClassName: {{ .Values.db.persistence.pvc.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.db.persistence.pvc.size | quote }}
+{{- end }}

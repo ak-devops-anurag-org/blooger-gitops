@@ -1,0 +1,50 @@
+{{- if .Values.frontend.ingress.enabled }}
+# ---------------------------------------------------------------------------
+# Off by default. Requires an ingress controller in the cluster, e.g.:
+#
+#   helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+#   helm install ingress-nginx ingress-nginx/ingress-nginx \
+#     -n ingress-nginx --create-namespace \
+#     --set controller.service.type=NodePort        # no cloud LB
+#
+# Drop the --set to let the controller create ONE shared L4 load balancer for
+# the whole cluster. That is still much cheaper than an application load
+# balancer per service, since every future app reuses the same one.
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "blooger.frontend.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "blooger.frontend.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+    {{- include "blooger.labels" . | nindent 4 }}
+  {{- with .Values.frontend.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.frontend.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.frontend.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.frontend.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType | default "Prefix" }}
+            backend:
+              service:
+                name: {{ include "blooger.frontend.name" $ }}
+                port:
+                  number: {{ $.Values.frontend.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}

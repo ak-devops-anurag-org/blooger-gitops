@@ -1,0 +1,30 @@
+apiVersion: v2
+name: blooger
+description: A 3-tier demo blog app (nginx frontend, API backend, PostgreSQL) that installs on any Kubernetes cluster with no cloud disk and no cloud load balancer required.
+
+type: application
+
+# Chart version — bump this on every change you publish.
+version: 0.1.1
+
+# Version of the app itself (the container images).
+appVersion: "1.0.0"
+
+keywords:
+  - blog
+  - demo
+  - three-tier
+  - postgresql
+  - nodeport
+
+home: https://github.com/akdevanurag/blooger-helm
+sources:
+  - https://github.com/akdevanurag/blooger-helm
+
+maintainers:
+  - name: akdevanurag
+
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/containsSecurityUpdates: "false"
+  artifacthub.io/prerelease: "false"
